@@ -1,0 +1,257 @@
+// Rank1Boost — schema completo
+// Dinheiro SEMPRE em centavos (Int) + moeda. Nunca Float.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  CLIENT
+  BOOSTER
+  ADMIN
+}
+
+enum BoosterStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+}
+
+enum BoosterTier {
+  STANDARD
+  MULTI_GLAD
+  R1
+  AWC
+}
+
+enum ServiceType {
+  BOOST
+  PILOT
+  SELF_PLAY
+  COACH
+  RENTAL
+  PACKAGE
+}
+
+enum PricingModel {
+  PER_RATING
+  PER_HOUR
+  FIXED
+}
+
+enum PvpActivity {
+  ARENA_2V2
+  ARENA_3V3
+  SOLO_SHUFFLE
+  BLITZ
+  RBG
+  CONQUEST
+  GLADIATOR
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  AWAITING_BOOSTER
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED_BY_BOOSTER
+  CONFIRMED_BY_CLIENT
+  PAID_OUT
+  CANCELLED
+  DISPUTED
+}
+
+enum PaymentStatus {
+  PENDING
+  HELD
+  REFUNDED
+  FAILED
+}
+
+enum PayoutStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// O id é o mesmo uuid do auth.users do Supabase.
+model User {
+  id        String   @id @db.Uuid
+  email     String   @unique
+  name      String
+  role      Role     @default(CLIENT)
+  locale    String   @default("pt-BR")
+  createdAt DateTime @default(now())
+
+  boosterProfile  BoosterProfile?
+  ordersAsClient  Order[]            @relation("ClientOrders")
+  ordersAsBooster Order[]            @relation("BoosterOrders")
+  applications    OrderApplication[]
+  messages        Message[]
+  statusEvents    OrderStatusEvent[]
+}
+
+model BoosterProfile {
+  userId      String        @id @db.Uuid
+  status      BoosterStatus @default(PENDING)
+  tier        BoosterTier   @default(STANDARD)
+  country     String
+  bio         String?
+  profileUrl  String
+  languages   String[]
+  regions     String[]
+  paypalEmail String
+  createdAt   DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Service {
+  id                 String       @id @default(uuid()) @db.Uuid
+  slug               String       @unique
+  name               String
+  type               ServiceType
+  pricingModel       PricingModel
+  activity           PvpActivity?
+  description        String?
+  // PER_RATING: preço por 100 pontos de rating | PER_HOUR: preço da hora | FIXED: preço do pacote
+  priceCents         Int
+  currency           String       @default("USD")
+  noGearSurchargeBps Int          @default(0)
+  active             Boolean      @default(true)
+
+  orders Order[]
+
+  @@index([activity, type])
+}
+
+model Order {
+  id        String      @id @default(uuid()) @db.Uuid
+  clientId  String      @db.Uuid
+  boosterId String?     @db.Uuid
+  serviceId String      @db.Uuid
+  status    OrderStatus @default(PENDING_PAYMENT)
+
+  // Snapshot na criação: mudar preço/comissão depois não altera pedidos antigos
+  priceCents    Int
+  currency      String
+  commissionBps Int
+
+  profileUrl    String
+  wowClass      String
+  spec          String
+  requestedTier BoosterTier @default(STANDARD)
+  currentRating Int?
+  targetRating  Int?
+  hours         Int?
+  hasSeasonGear Boolean
+  notes         String?
+
+  createdAt   DateTime  @default(now())
+  assignedAt  DateTime?
+  completedAt DateTime?
+  confirmedAt DateTime?
+
+  client  User    @relation("ClientOrders", fields: [clientId], references: [id])
+  booster User?   @relation("BoosterOrders", fields: [boosterId], references: [id])
+  service Service @relation(fields: [serviceId], references: [id])
+
+  applications OrderApplication[]
+  statusEvents OrderStatusEvent[]
+  messages     Message[]
+  payment      Payment?
+  payout       Payout?
+  review       Review?
+
+  @@index([status, createdAt])
+  @@index([clientId])
+  @@index([boosterId])
+}
+
+model OrderApplication {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @db.Uuid
+  boosterId String   @db.Uuid
+  message   String?
+  createdAt DateTime @default(now())
+
+  order   Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  booster User  @relation(fields: [boosterId], references: [id])
+
+  @@unique([orderId, boosterId])
+}
+
+model OrderStatusEvent {
+  id         String       @id @default(uuid()) @db.Uuid
+  orderId    String       @db.Uuid
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+  actorId    String?      @db.Uuid
+  createdAt  DateTime     @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([orderId, createdAt])
+}
+
+model Message {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @db.Uuid
+  senderId  String   @db.Uuid
+  body      String
+  createdAt DateTime @default(now())
+
+  order  Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sender User  @relation(fields: [senderId], references: [id])
+
+  @@index([orderId, createdAt])
+}
+
+model Payment {
+  id          String        @id @default(uuid()) @db.Uuid
+  orderId     String        @unique @db.Uuid
+  provider    String
+  providerRef String?
+  amountCents Int
+  currency    String
+  status      PaymentStatus @default(PENDING)
+  createdAt   DateTime      @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+}
+
+model Payout {
+  id              String       @id @default(uuid()) @db.Uuid
+  orderId         String       @unique @db.Uuid
+  boosterId       String       @db.Uuid
+  grossCents      Int
+  commissionCents Int
+  netCents        Int
+  currency        String
+  paypalEmail     String
+  paypalBatchId   String?
+  paypalItemId    String?
+  status          PayoutStatus @default(PENDING)
+  createdAt       DateTime     @default(now())
+  paidAt          DateTime?
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([boosterId])
+}
+
+model Review {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @unique @db.Uuid
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+}
